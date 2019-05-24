@@ -359,6 +359,22 @@ func TestTCPTransportIsUsedByDefault(t *testing.T) {
 	}
 }
 
+func TestUDPTransportIsUsed(t *testing.T) {
+	defer leaktest.AfterTest(t)()
+	defer os.RemoveAll(singleNodeHostTestDir)
+	os.RemoveAll(singleNodeHostTestDir)
+	c := getTestNodeHostConfig()
+	c.RaftRPCFactory = transport.NewUDPTransport
+	nh := NewNodeHost(*c)
+	defer nh.Stop()
+	tt := nh.transport.(*transport.Transport)
+	if tt.GetRaftRPC().Name() != transport.UDPRaftRPCName {
+		t.Errorf("raft rpc type name %s, expect %s",
+			tt.GetRaftRPC().Name(), transport.UDPRaftRPCName)
+	}
+}
+
+
 func TestRaftRPCCanBeExtended(t *testing.T) {
 	defer leaktest.AfterTest(t)()
 	defer os.RemoveAll(singleNodeHostTestDir)
@@ -445,6 +461,7 @@ func TestMasterClientIsPeriodicallyUsed(t *testing.T) {
 	NodeHostInfoReportSecond = 1
 	c := getTestNodeHostConfig()
 	c.MasterServers = []string{"localhost:22222"}
+	c.RaftRPCFactory = transport.NewUDPTransport
 	mc := &noopMasterClient{}
 	factory := func(*NodeHost) IMasterClient {
 		return mc

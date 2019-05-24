@@ -56,6 +56,92 @@ func isListenerStopperError(err error) bool {
 	return strings.Contains(err.Error(), "use of closed network connection")
 }
 
+// NewUDPStoppableListener returns a listener that can be stopped.
+func NewUDPStoppableListener(addr string, tlsConfig *tls.Config,
+	stopc <-chan struct{}) (*StoppableListener, error) {
+	addr = strings.TrimSpace(addr)
+	hostname, port, err := parseAddress(addr)
+	if err != nil {
+		return nil, err
+	}
+	// workaround the design bug in golang's net package.
+	// https://github.com/golang/go/issues/9334?ts=2
+	listeners := make([]net.Listener, 0)
+	toListen := make([]string, 0)
+	if stringutil.HostnameRegex.MatchString(hostname) {
+		ipList, err := net.LookupIP(hostname)
+		if err != nil {
+			return nil, err
+		}
+		for _, v := range ipList {
+			// ipv6 address is ignored
+			if v.To4() == nil {
+				continue
+			}
+			toListen = append(toListen, fmt.Sprintf("%s:%s", v, port))
+		}
+	} else if stringutil.IPV4Regex.MatchString(hostname) {
+		toListen = append(toListen, addr)
+	}
+	for _, v := range toListen {
+		ln, err := net.Listen("tcp", v)
+		if err != nil {
+			return nil, err
+		}
+		listeners = append(listeners, ln)
+	}
+	s := &StoppableListener{
+		listeners: listeners,
+		stopc:     stopc,
+		addr:      addr,
+		errc:      make(chan error, len(listeners)),
+		connc:     make(chan net.Conn, len(listeners)),
+	}
+	for _, lis := range s.listeners {
+		gl := lis
+		s.wg.Add(1)
+		go func() {
+			defer s.wg.Done()
+			for {
+				tc, err := gl.Accept()
+				if err != nil {
+					select {
+					case s.errc <- err:
+					case <-s.stopc:
+						return
+					}
+					if isListenerStopperError(err) {
+						return
+					}
+					continue
+				}
+				tcpconn, ok := tc.(*net.TCPConn)
+				if ok {
+					if err := setTCPConn(tcpconn); err != nil {
+						continue
+					}
+				}
+				if tlsConfig != nil {
+					tc = tls.Server(tc, tlsConfig)
+					tt := time.Now().Add(3 * time.Second)
+					if err := tc.SetDeadline(tt); err != nil {
+						continue
+					}
+					if err := tc.(*tls.Conn).Handshake(); err != nil {
+						continue
+					}
+				}
+				select {
+				case s.connc <- tc:
+				case <-s.stopc:
+					return
+				}
+			}
+		}()
+	}
+	return s, nil
+}
+
 // NewStoppableListener returns a listener that can be stopped.
 func NewStoppableListener(addr string, tlsConfig *tls.Config,
 	stopc <-chan struct{}) (*StoppableListener, error) {
