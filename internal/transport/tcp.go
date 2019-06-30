@@ -153,6 +153,7 @@ func readMessage(conn net.Conn,
 		plog.Errorf("failed to get the header")
 		return requestHeader{}, nil, err
 	}
+	plog.Errorf("get raw header %v", header)
 	rheader := requestHeader{}
 	if !rheader.decode(header) {
 		plog.Errorf("invalid header")
@@ -402,6 +403,7 @@ func (g *TCPTransport) serveConn(conn net.Conn) {
 	defer stopper.Stop()
 	for {
 		err := readMagicNumber(conn, magicNum)
+		plog.Errorf("Find match magic number")
 		if err != nil {
 			if err == ErrBadMessage {
 				return

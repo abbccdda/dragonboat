@@ -349,6 +349,7 @@ func newUDPTestTransport(mutualTLS bool) (*Transport, *Nodes,
 
 func testMessageCanBeSent(t *testing.T, mutualTLS bool, sz uint64) {
 	trans, nodes, stopper, _ := newUDPTestTransport(mutualTLS)
+	//trans, nodes, stopper, _ := newTestTransport(mutualTLS)
 	defer trans.serverCtx.Stop()
 	defer trans.Stop()
 	defer stopper.Stop()

@@ -15,14 +15,14 @@
 package transport
 
 import (
+	"bytes"
 	"context"
 	"fmt"
-
-	//"context"
 	"github.com/lni/dragonboat/config"
 	"github.com/lni/dragonboat/internal/utils/syncutil"
 	"github.com/lni/dragonboat/raftio"
 	"github.com/lni/dragonboat/raftpb"
+	"hash/crc32"
 	"net"
 	"sync"
 	"time"
@@ -52,11 +52,12 @@ type UDPConnection struct {
 }
 
 // NewUDPConnection creates and returns a new TCPConnection instance.
-func NewUDPConnection(conn net.Conn) *TCPConnection {
-	return &TCPConnection{
+func NewUDPConnection(conn net.Conn, target string) *UDPConnection {
+	return &UDPConnection{
 		conn:    conn,
 		header:  make([]byte, requestHeaderSize),
 		payload: make([]byte, perConnBufSize),
+		target: target,
 	}
 }
 
@@ -64,12 +65,12 @@ func NewUDPConnection(conn net.Conn) *TCPConnection {
 // UDPSnapshotConnection is the connection for sending raft snapshot chunks to
 // remote nodes.
 type UDPSnapshotConnection struct {
-	conn   net.Conn
+	conn   *net.UDPConn
 	header []byte
 }
 
 // NewUDPSnapshotConnection creates and returns a new snapshot connection.
-func NewUDPSnapshotConnection(conn net.Conn) *UDPSnapshotConnection {
+func NewUDPSnapshotConnection(conn *net.UDPConn) *UDPSnapshotConnection {
 	return &UDPSnapshotConnection{
 		conn:   conn,
 		header: make([]byte, requestHeaderSize),
@@ -87,36 +88,43 @@ func (c *UDPSnapshotConnection) Close() {
 func (g *UDPTransport) Start() error {
 	address := g.nhConfig.GetListenAddress()
 
-	addr, err := net.ResolveUDPAddr("udp", address)
+	//addr, err := net.ResolveUDPAddr("udp", address)
+	//if err != nil {
+	//	return err
+	//}
+	//conn, err := net.ListenUDP("udp", addr)
+	//
+	//if err != nil {
+	//	plog.Panicf("failed to new a stoppable listener, %v", err)
+	//}
+
+	pc, err := net.ListenPacket("udp", address)
 	if err != nil {
 		return err
 	}
-	conn, err := net.ListenUDP("udp", addr)
 
-	if err != nil {
-		plog.Panicf("failed to new a stoppable listener, %v", err)
-	}
+
 	g.stopper.RunWorker(func() {
 		for {
-			p := make([]byte, 2048)
-
-			_, remoteaddr, err := conn.ReadFromUDP(p)
-			fmt.Printf("Read a message from %v %s \n", remoteaddr, p)
-			if err != nil {
-				fmt.Printf("Some error  %v", err)
-				continue
-			}
-
-			_, err = conn.WriteToUDP([]byte("From server: Hello I got your message "), remoteaddr)
-			if err != nil {
-				fmt.Printf("Couldn't send response %v", err)
-			}
+			//p := make([]byte, 2048)
+			//
+			//_, remoteaddr, err := conn.ReadFromUDP(p)
+			////fmt.Printf("Read a message from %v %s \n", remoteaddr, p)
+			//if err != nil {
+			//	fmt.Printf("Some error  %v", err)
+			//	continue
+			//}
+			//
+			//_, err = conn.WriteToUDP([]byte("From server: Hello I got your message "), remoteaddr)
+			//if err != nil {
+			//	fmt.Printf("Couldn't send response %v", err)
+			//}
 
 			var once sync.Once
 			closeFn := func() {
 				once.Do(func() {
-					if err := conn.Close(); err != nil {
-						plog.Errorf("failed to close the connection %v", err)
+					if err := pc.Close(); err != nil {
+						plog.Errorf("failed to close the listener packet %v", err)
 					}
 				})
 			}
@@ -125,7 +133,7 @@ func (g *UDPTransport) Start() error {
 				closeFn()
 			})
 			g.stopper.RunWorker(func() {
-				g.serveConn(conn)
+				g.serveConn(pc)
 				closeFn()
 			})
 		}
@@ -133,10 +141,11 @@ func (g *UDPTransport) Start() error {
 	return nil
 }
 
-func (g *UDPTransport) serveConn(conn net.Conn) {
+func (g *UDPTransport) serveConn(pc net.PacketConn) {
 	magicNum := make([]byte, len(magicNumber))
 	header := make([]byte, requestHeaderSize)
 	tbuf := make([]byte, payloadBufferSize)
+	
 	var chunks raftio.IChunkSink
 	stopper := syncutil.NewStopper()
 	defer func() {
@@ -146,22 +155,39 @@ func (g *UDPTransport) serveConn(conn net.Conn) {
 	}()
 	defer stopper.Stop()
 	for {
-		err := readMagicNumber(conn, magicNum)
-		if err != nil {
-			if err == ErrBadMessage {
-				return
-			}
-			operr, ok := err.(net.Error)
-			if ok && operr.Timeout() {
-				continue
-			} else {
-				return
-			}
+
+		tt := time.Now().Add(magicNumberDuration)
+		if err := pc.SetReadDeadline(tt); err != nil {
 		}
-		rheader, buf, err := readMessage(conn, header, tbuf)
-		if err != nil {
+
+		if _, _, err := pc.ReadFrom(magicNum); err != nil {
+			fmt.Printf("err reading full buffer from udp %v", err)
+		}
+
+		if !bytes.Equal(magicNum, magicNumber[:]) {
+			plog.Errorf("invalid magic number")
+			return
+		} else {
+			plog.Errorf("Find match magic number")
+		}
+
+
+		tt = time.Now().Add(headerDuration)
+		if err := pc.SetReadDeadline(tt); err != nil {
 			return
 		}
+		if _, _, err := pc.ReadFrom(header); err != nil {
+			plog.Errorf("failed to get the header %v", err)
+			return
+		}
+
+		rheader, buf, err := readUDPMessage(header, tbuf)
+		if err != nil {
+			fmt.Printf("Encounter error while reading header %v \n", header)
+			//plog.Errorf("actual full data looks like %v", fullBuf[:])
+			return
+		}
+
 		if rheader.method == raftType {
 			batch := raftpb.MessageBatch{}
 			if err := batch.Unmarshal(buf); err != nil {
@@ -192,8 +218,58 @@ func (g *UDPTransport) serveConn(conn net.Conn) {
 		}
 	}
 }
-// NewUDPTransport creates and returns a new UDP transport module.
 
+func readUDPMessage(header []byte, rbuf []byte) (requestHeader, []byte, error) {
+	rheader := requestHeader{}
+	if !rheader.decode(header) {
+		plog.Errorf("invalid header")
+		return requestHeader{}, nil, ErrBadMessage
+	}
+	if rheader.size == 0 {
+		plog.Errorf("invalid payload length")
+		return requestHeader{}, nil, ErrBadMessage
+	}
+	var buf []byte
+	if rheader.size > uint32(len(rbuf)) {
+		buf = make([]byte, rheader.size)
+	} else {
+		buf = rbuf[:rheader.size]
+	}
+	received := 0
+	var recvBuf []byte
+	if rheader.size < uint32(recvBufSize) {
+		recvBuf = buf[:rheader.size]
+	} else {
+		recvBuf = buf[:recvBufSize]
+	}
+	toRead := rheader.size
+	for toRead > 0 {
+		//tt = time.Now().Add(readDuration)
+		//if err := conn.SetReadDeadline(tt); err != nil {
+		//	return requestHeader{}, nil, err
+		//}
+		//if _, err := io.ReadFull(conn, recvBuf); err != nil {
+		//	return requestHeader{}, nil, err
+		//}
+		toRead -= uint32(len(recvBuf))
+		received += len(recvBuf)
+		if toRead < uint32(recvBufSize) {
+			recvBuf = buf[received : uint32(received)+toRead]
+		} else {
+			recvBuf = buf[received : received+int(recvBufSize)]
+		}
+	}
+	if uint32(received) != rheader.size {
+		panic("unexpected size")
+	}
+	//if crc32.ChecksumIEEE(buf) != rheader.crc {
+	//	plog.Errorf("invalid payload checksum")
+	//	return requestHeader{}, nil, ErrBadMessage
+	//}
+	return rheader, buf, nil
+}
+
+// NewUDPTransport creates and returns a new UDP transport module.
 func NewUDPTransport(nhConfig config.NodeHostConfig,
 	requestHandler raftio.RequestHandler,
 	sinkFactory raftio.ChunkSinkFactory) raftio.IRaftRPC {
@@ -220,7 +296,7 @@ func (g *UDPTransport) GetConnection(ctx context.Context,
 	if err != nil {
 		return nil, err
 	}
-	return NewUDPConnection(conn), nil
+	return NewUDPConnection(conn, target), nil
 }
 
 
@@ -233,6 +309,7 @@ func (c *UDPConnection) Close() {
 
 // SendMessageBatch sends a raft message batch to remote node.
 func (c *UDPConnection) SendMessageBatch(batch raftpb.MessageBatch) error {
+	plog.Errorf("starting to send message batch")
 	header := requestHeader{method: raftType}
 	sz := batch.SizeUpperLimit()
 	var buf []byte
@@ -256,7 +333,61 @@ func (c *UDPConnection) SendMessageBatch(batch raftpb.MessageBatch) error {
 		return err
 	}
 
-	return writeMessage(conn, header, buf[:n], c.header)
+	return writeUDPMessage(conn, header, buf[:n], c.header)
+}
+
+
+func writeUDPMessage(conn *net.UDPConn,
+	header requestHeader, buf []byte, headerBuf []byte) error {
+	crc := crc32.ChecksumIEEE(buf)
+	header.size = uint32(len(buf))
+	header.crc = crc
+	headerBuf = header.encode(headerBuf)
+	tt := time.Now().Add(magicNumberDuration).Add(headerDuration).Add(writeDuration)
+	if err := conn.SetWriteDeadline(tt); err != nil {
+		return err
+	}
+
+	//fullLength := len(magicNumber) + requestHeaderSize + int(payloadBufferSize)
+
+	fullBuf := make([]byte, 0)
+	fullBuf = append(fullBuf, magicNumber[:]...)
+	fullBuf = append(fullBuf, headerBuf...)
+	fullBuf = append(fullBuf, buf...)
+
+
+	//if _, err := conn.Write(magicNumber[:]); err != nil {
+	//	return err
+	//}
+	//if _, err := conn.Write(headerBuf); err != nil {
+	//	return err
+	//}
+
+
+	//sent := 0
+	//bufSize := int(recvBufSize)
+	//for sent < len(buf) {
+	//	if sent+bufSize > len(buf) {
+	//		bufSize = len(buf) - sent
+	//	}
+	//	if err := conn.SetWriteDeadline(tt); err != nil {
+	//		return err
+	//	}
+	//	if _, err := conn.Write(buf[sent : sent+bufSize]); err != nil {
+	//		return err
+	//	}
+	//	sent += bufSize
+	//}
+	//if sent != len(buf) {
+	//	plog.Panicf("sent %d, buf len %d", sent, len(buf))
+	//}
+
+	plog.Errorf("get full buf to be written: %v", fullBuf)
+
+	if _, err := conn.Write(fullBuf); err != nil {
+		return err
+	}
+	return nil
 }
 
 // GetSnapshotConnection returns a new raftio.IConnection for sending raft
@@ -267,7 +398,7 @@ func (g *UDPTransport) GetSnapshotConnection(ctx context.Context,
 	if err != nil {
 		return nil, err
 	}
-	return NewUDPSnapshotConnection(conn), nil
+	return NewUDPSnapshotConnection(conn.(*net.UDPConn)), nil
 }
 
 // SendSnapshotChunk sends the specified snapshot chunk to remote node.
@@ -279,7 +410,7 @@ func (c *UDPSnapshotConnection) SendSnapshotChunk(chunk raftpb.SnapshotChunk) er
 	if err != nil {
 		panic(err)
 	}
-	return writeMessage(c.conn, header, buf[:n], c.header)
+	return writeUDPMessage(c.conn, header, buf[:n], c.header)
 }
 
 // Name returns a human readable name of the TCP transport module.
