@@ -108,6 +108,7 @@ type Marshaler interface {
 
 func writeMessage(conn net.Conn,
 	header requestHeader, buf []byte, headerBuf []byte) error {
+	plog.Infof("write one tcp message")
 	crc := crc32.ChecksumIEEE(buf)
 	header.size = uint32(len(buf))
 	header.crc = crc
@@ -330,26 +331,34 @@ func (g *TCPTransport) Start() error {
 	}
 	g.stopper.RunWorker(func() {
 		for {
+			plog.Errorf("Entering for loop")
 			conn, err := listener.Accept()
 			if err != nil {
 				if err == netutil.ErrListenerStopped {
 					return
 				}
+				plog.Errorf("Got error for listen", err)
+
 				panic(err)
+
 			}
 			var once sync.Once
 			closeFn := func() {
 				once.Do(func() {
+					plog.Errorf("Try close")
 					if err := conn.Close(); err != nil {
 						plog.Errorf("failed to close the connection %v", err)
 					}
+					plog.Errorf("Done closing")
 				})
 			}
+
 			g.stopper.RunWorker(func() {
 				<-g.stopper.ShouldStop()
 				closeFn()
 			})
 			g.stopper.RunWorker(func() {
+				plog.Errorf("started a tcp worker")
 				g.serveConn(conn)
 				closeFn()
 			})
@@ -403,7 +412,7 @@ func (g *TCPTransport) serveConn(conn net.Conn) {
 	defer stopper.Stop()
 	for {
 		err := readMagicNumber(conn, magicNum)
-		plog.Errorf("Find match magic number")
+		plog.Errorf("Find match tcp magic number")
 		if err != nil {
 			if err == ErrBadMessage {
 				return

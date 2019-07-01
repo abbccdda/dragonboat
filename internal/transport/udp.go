@@ -17,7 +17,6 @@ package transport
 import (
 	"bytes"
 	"context"
-	"fmt"
 	"github.com/lni/dragonboat/config"
 	"github.com/lni/dragonboat/internal/utils/syncutil"
 	"github.com/lni/dragonboat/raftio"
@@ -103,23 +102,8 @@ func (g *UDPTransport) Start() error {
 		return err
 	}
 
-
 	g.stopper.RunWorker(func() {
-		for {
-			//p := make([]byte, 2048)
-			//
-			//_, remoteaddr, err := conn.ReadFromUDP(p)
-			////fmt.Printf("Read a message from %v %s \n", remoteaddr, p)
-			//if err != nil {
-			//	fmt.Printf("Some error  %v", err)
-			//	continue
-			//}
-			//
-			//_, err = conn.WriteToUDP([]byte("From server: Hello I got your message "), remoteaddr)
-			//if err != nil {
-			//	fmt.Printf("Couldn't send response %v", err)
-			//}
-
+		//for {
 			var once sync.Once
 			closeFn := func() {
 				once.Do(func() {
@@ -133,15 +117,18 @@ func (g *UDPTransport) Start() error {
 				closeFn()
 			})
 			g.stopper.RunWorker(func() {
-				g.serveConn(pc)
+				if err := g.serveConn(pc); err != nil {
+					plog.Errorf("encountered error while serving connection: %v", err)
+				}
 				closeFn()
 			})
-		}
+		//}
 	})
 	return nil
 }
 
-func (g *UDPTransport) serveConn(pc net.PacketConn) {
+func (g *UDPTransport) serveConn(pc net.PacketConn) error {
+	plog.Errorf("serving a connection!")
 	magicNum := make([]byte, len(magicNumber))
 	header := make([]byte, requestHeaderSize)
 	tbuf := make([]byte, payloadBufferSize)
@@ -156,48 +143,56 @@ func (g *UDPTransport) serveConn(pc net.PacketConn) {
 	defer stopper.Stop()
 	for {
 
-		tt := time.Now().Add(magicNumberDuration)
-		if err := pc.SetReadDeadline(tt); err != nil {
-		}
+		//tt := time.Now().Add(magicNumberDuration)
+		//if err := pc.SetReadDeadline(tt); err != nil {
+		//}
 
-		if _, _, err := pc.ReadFrom(magicNum); err != nil {
-			fmt.Printf("err reading full buffer from udp %v", err)
+		if n, _, err := pc.ReadFrom(magicNum); err != nil {
+			plog.Errorf("err reading full buffer from udp %v", err)
+			return err
+		} else {
+			plog.Errorf("successfully read magic num %v with total %v read", magicNum, n)
 		}
 
 		if !bytes.Equal(magicNum, magicNumber[:]) {
 			plog.Errorf("invalid magic number")
-			return
+			return nil
 		} else {
 			plog.Errorf("Find match magic number")
 		}
 
+		plog.Errorf("Reach L179")
 
-		tt = time.Now().Add(headerDuration)
-		if err := pc.SetReadDeadline(tt); err != nil {
-			return
-		}
+		//tt = time.Now().Add(headerDuration)
+		//if err := pc.SetReadDeadline(tt); err != nil {
+		//	return err
+		//}
 		if _, _, err := pc.ReadFrom(header); err != nil {
 			plog.Errorf("failed to get the header %v", err)
-			return
+			return err
+		} else {
+			plog.Errorf("found correct header %v", header)
 		}
+		plog.Errorf("Reach L192")
 
-		rheader, buf, err := readUDPMessage(header, tbuf)
+
+		rheader, buf, err := readUDPMessage(header, tbuf, pc)
 		if err != nil {
-			fmt.Printf("Encounter error while reading header %v \n", header)
+			plog.Errorf("Encounter error while reading header %v \n", header)
 			//plog.Errorf("actual full data looks like %v", fullBuf[:])
-			return
+			return err
 		}
 
 		if rheader.method == raftType {
 			batch := raftpb.MessageBatch{}
 			if err := batch.Unmarshal(buf); err != nil {
-				return
+				return err
 			}
 			g.requestHandler(batch)
 		} else {
 			chunk := raftpb.SnapshotChunk{}
 			if err := chunk.Unmarshal(buf); err != nil {
-				return
+				return err
 			}
 			if chunks == nil {
 				chunks = g.sinkFactory()
@@ -219,7 +214,7 @@ func (g *UDPTransport) serveConn(pc net.PacketConn) {
 	}
 }
 
-func readUDPMessage(header []byte, rbuf []byte) (requestHeader, []byte, error) {
+func readUDPMessage(header []byte, rbuf []byte, pc net.PacketConn) (requestHeader, []byte, error) {
 	rheader := requestHeader{}
 	if !rheader.decode(header) {
 		plog.Errorf("invalid header")
@@ -235,6 +230,8 @@ func readUDPMessage(header []byte, rbuf []byte) (requestHeader, []byte, error) {
 	} else {
 		buf = rbuf[:rheader.size]
 	}
+
+
 	received := 0
 	var recvBuf []byte
 	if rheader.size < uint32(recvBufSize) {
@@ -244,13 +241,13 @@ func readUDPMessage(header []byte, rbuf []byte) (requestHeader, []byte, error) {
 	}
 	toRead := rheader.size
 	for toRead > 0 {
-		//tt = time.Now().Add(readDuration)
-		//if err := conn.SetReadDeadline(tt); err != nil {
-		//	return requestHeader{}, nil, err
-		//}
-		//if _, err := io.ReadFull(conn, recvBuf); err != nil {
-		//	return requestHeader{}, nil, err
-		//}
+		tt := time.Now().Add(readDuration)
+		if err := pc.SetReadDeadline(tt); err != nil {
+			return requestHeader{}, nil, err
+		}
+		if _, _, err := pc.ReadFrom(recvBuf); err != nil {
+			return requestHeader{}, nil, err
+		}
 		toRead -= uint32(len(recvBuf))
 		received += len(recvBuf)
 		if toRead < uint32(recvBufSize) {
@@ -309,7 +306,6 @@ func (c *UDPConnection) Close() {
 
 // SendMessageBatch sends a raft message batch to remote node.
 func (c *UDPConnection) SendMessageBatch(batch raftpb.MessageBatch) error {
-	plog.Errorf("starting to send message batch")
 	header := requestHeader{method: raftType}
 	sz := batch.SizeUpperLimit()
 	var buf []byte
@@ -349,44 +345,49 @@ func writeUDPMessage(conn *net.UDPConn,
 	}
 
 	//fullLength := len(magicNumber) + requestHeaderSize + int(payloadBufferSize)
-
-	fullBuf := make([]byte, 0)
-	fullBuf = append(fullBuf, magicNumber[:]...)
-	fullBuf = append(fullBuf, headerBuf...)
-	fullBuf = append(fullBuf, buf...)
-
-
-	//if _, err := conn.Write(magicNumber[:]); err != nil {
-	//	return err
-	//}
-	//if _, err := conn.Write(headerBuf); err != nil {
-	//	return err
-	//}
+	//
+	//fullBuf := make([]byte, 0)
+	//fullBuf = append(fullBuf, magicNumber[:]...)
+	//fullBuf = append(fullBuf, headerBuf...)
+	//fullBuf = append(fullBuf, buf...)
 
 
-	//sent := 0
-	//bufSize := int(recvBufSize)
-	//for sent < len(buf) {
-	//	if sent+bufSize > len(buf) {
-	//		bufSize = len(buf) - sent
-	//	}
-	//	if err := conn.SetWriteDeadline(tt); err != nil {
-	//		return err
-	//	}
-	//	if _, err := conn.Write(buf[sent : sent+bufSize]); err != nil {
-	//		return err
-	//	}
-	//	sent += bufSize
-	//}
-	//if sent != len(buf) {
-	//	plog.Panicf("sent %d, buf len %d", sent, len(buf))
-	//}
-
-	plog.Errorf("get full buf to be written: %v", fullBuf)
-
-	if _, err := conn.Write(fullBuf); err != nil {
+	if _, err := conn.Write(magicNumber[:]); err != nil {
+		plog.Errorf("could not write magic number", err)
 		return err
 	}
+	if _, err := conn.Write(headerBuf); err != nil {
+		plog.Errorf("could not write header buf", err)
+		return err
+	}
+
+
+	sent := 0
+	bufSize := int(recvBufSize)
+	for sent < len(buf) {
+		if sent+bufSize > len(buf) {
+			bufSize = len(buf) - sent
+		}
+		if err := conn.SetWriteDeadline(tt); err != nil {
+			return err
+		}
+		if _, err := conn.Write(buf[sent : sent+bufSize]); err != nil {
+			return err
+		}
+		sent += bufSize
+	}
+	if sent != len(buf) {
+		plog.Panicf("sent %d, buf len %d", sent, len(buf))
+	}
+
+	//plog.Errorf("get full buf to be written: %v", fullBuf)
+	//
+	//if _, err := conn.Write(fullBuf); err != nil {
+	//	return err
+	//}
+
+	plog.Errorf("finished sending message batch")
+
 	return nil
 }
 
