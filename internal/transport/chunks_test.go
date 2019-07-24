@@ -84,7 +84,7 @@ func getTestDeploymentID() uint64 {
 
 func runChunkTest(t *testing.T, fn func(*testing.T, *chunks, *testMessageHandler)) {
 	defer leaktest.AfterTest(t)
-	trans, _, stopper, tt := newTestTransport(false)
+	trans, _, stopper, tt := newTestTransport(false, getRaftRPCFactoryFunc())
 	defer leaktest.AfterTest(t)()
 	defer trans.serverCtx.Stop()
 	defer trans.Stop()

@@ -29,7 +29,9 @@ import (
 
 const (
 	// UDPRaftRPCName is the name of the tcp RPC module.
-	UDPRaftRPCName           = "go-tcp-transport"
+	UDPRaftRPCName           = "go-udp-transport"
+	udpRecvBufSize           = 30 * 1024
+
 )
 
 // UDPTransport is a UDP based RPC module for exchanging raft messages and
@@ -103,26 +105,24 @@ func (g *UDPTransport) Start() error {
 	}
 
 	g.stopper.RunWorker(func() {
-		//for {
-			var once sync.Once
-			closeFn := func() {
-				once.Do(func() {
-					if err := pc.Close(); err != nil {
-						plog.Errorf("failed to close the listener packet %v", err)
-					}
-				})
-			}
-			g.stopper.RunWorker(func() {
-				<-g.stopper.ShouldStop()
-				closeFn()
-			})
-			g.stopper.RunWorker(func() {
-				if err := g.serveConn(pc); err != nil {
-					plog.Errorf("encountered error while serving connection: %v", err)
+		var once sync.Once
+		closeFn := func() {
+			once.Do(func() {
+				if err := pc.Close(); err != nil {
+					plog.Errorf("failed to close the listener packet %v", err)
 				}
-				closeFn()
 			})
-		//}
+		}
+		g.stopper.RunWorker(func() {
+			<-g.stopper.ShouldStop()
+			closeFn()
+		})
+		g.stopper.RunWorker(func() {
+			if err := g.serveConn(pc); err != nil {
+				plog.Errorf("encountered error while serving connection: %v", err)
+			}
+			closeFn()
+		})
 	})
 	return nil
 }
@@ -161,8 +161,6 @@ func (g *UDPTransport) serveConn(pc net.PacketConn) error {
 			plog.Errorf("Find match magic number")
 		}
 
-		plog.Errorf("Reach L179")
-
 		//tt = time.Now().Add(headerDuration)
 		//if err := pc.SetReadDeadline(tt); err != nil {
 		//	return err
@@ -173,8 +171,6 @@ func (g *UDPTransport) serveConn(pc net.PacketConn) error {
 		} else {
 			plog.Errorf("found correct header %v", header)
 		}
-		plog.Errorf("Reach L192")
-
 
 		rheader, buf, err := readUDPMessage(header, tbuf, pc)
 		if err != nil {
@@ -344,6 +340,9 @@ func writeUDPMessage(conn *net.UDPConn,
 		return err
 	}
 
+	if err := conn.SetWriteBuffer(int(udpRecvBufSize)); err != nil {
+		return err
+	}
 	//fullLength := len(magicNumber) + requestHeaderSize + int(payloadBufferSize)
 	//
 	//fullBuf := make([]byte, 0)
@@ -362,6 +361,8 @@ func writeUDPMessage(conn *net.UDPConn,
 	}
 
 
+	plog.Errorf("could write header and magic")
+
 	sent := 0
 	bufSize := int(recvBufSize)
 	for sent < len(buf) {
@@ -372,6 +373,7 @@ func writeUDPMessage(conn *net.UDPConn,
 			return err
 		}
 		if _, err := conn.Write(buf[sent : sent+bufSize]); err != nil {
+			plog.Errorf("failed to write due to %v. Max %v but actual %v", err, recvBufSize, bufSize)
 			return err
 		}
 		sent += bufSize

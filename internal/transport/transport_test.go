@@ -304,7 +304,7 @@ func newNOOPTestTransport() (*Transport,
 	return transport, nodes, raftRPC, raftRPC.req, raftRPC.connReq
 }
 
-func newTestTransport(mutualTLS bool) (*Transport, *Nodes,
+func newTestTransport(mutualTLS bool, rpcFactory config.RaftRPCFactoryFunc) (*Transport, *Nodes,
 	*syncutil.Stopper, *getTestSnapshotDirStruct) {
 	stopper := syncutil.NewStopper()
 	nodes := NewNodes(settings.Soft.StreamConnections)
@@ -312,7 +312,6 @@ func newTestTransport(mutualTLS bool) (*Transport, *Nodes,
 	c := config.NodeHostConfig{
 		RaftAddress:    grpcServerURL,
 		RaftRPCFactory: getRaftRPCFactoryFunc(),
-		//RaftRPCFactory: NewUDPTransport,
 	}
 	if mutualTLS {
 		c.MutualTLS = true
@@ -347,9 +346,8 @@ func newUDPTestTransport(mutualTLS bool) (*Transport, *Nodes,
 	return transport, nodes, stopper, t
 }
 
-func testMessageCanBeSent(t *testing.T, mutualTLS bool, sz uint64) {
-	trans, nodes, stopper, _ := newUDPTestTransport(mutualTLS)
-	//trans, nodes, stopper, _ := newTestTransport(mutualTLS)
+func testMessageCanBeSent(t *testing.T, mutualTLS bool, sz uint64, rpcFactory config.RaftRPCFactoryFunc) {
+	trans, nodes, stopper, _ := newTestTransport(mutualTLS, rpcFactory)
 	defer trans.serverCtx.Stop()
 	defer trans.Stop()
 	defer stopper.Stop()
@@ -408,21 +406,38 @@ func testMessageCanBeSent(t *testing.T, mutualTLS bool, sz uint64) {
 	}
 }
 
-func TestMessageCanBeSent(t *testing.T) {
+func TestTCPMessageCanBeSent(t *testing.T) {
 	defer leaktest.AfterTest(t)()
-	//testMessageCanBeSent(t, false, settings.MaxProposalPayloadSize*2)
-	//testMessageCanBeSent(t, false, recvBufSize/2)
-	//testMessageCanBeSent(t, false, recvBufSize+1)
-	//testMessageCanBeSent(t, false, perConnBufSize+1)
-	//testMessageCanBeSent(t, false, perConnBufSize/2)
-	//testMessageCanBeSent(t, false, 1)
-	//testMessageCanBeSent(t, true, settings.MaxProposalPayloadSize*2)
-	//testMessageCanBeSent(t, true, recvBufSize/2)
-	//testMessageCanBeSent(t, true, recvBufSize+1)
-	//testMessageCanBeSent(t, true, perConnBufSize+1)
-	//testMessageCanBeSent(t, true, perConnBufSize/2)
-	testMessageCanBeSent(t, true, 1)
+	testMessageCanBeSent(t, false, settings.MaxProposalPayloadSize*2, getRaftRPCFactoryFunc())
+	testMessageCanBeSent(t, false, recvBufSize/2, getRaftRPCFactoryFunc())
+	testMessageCanBeSent(t, false, recvBufSize+1, getRaftRPCFactoryFunc())
+	testMessageCanBeSent(t, false, perConnBufSize+1, getRaftRPCFactoryFunc())
+	testMessageCanBeSent(t, false, perConnBufSize/2, getRaftRPCFactoryFunc())
+	testMessageCanBeSent(t, false, 1, getRaftRPCFactoryFunc())
+	testMessageCanBeSent(t, true, settings.MaxProposalPayloadSize*2, getRaftRPCFactoryFunc())
+	testMessageCanBeSent(t, true, recvBufSize/2, getRaftRPCFactoryFunc())
+	testMessageCanBeSent(t, true, recvBufSize+1, getRaftRPCFactoryFunc())
+	testMessageCanBeSent(t, true, perConnBufSize+1, getRaftRPCFactoryFunc())
+	testMessageCanBeSent(t, true, perConnBufSize/2, getRaftRPCFactoryFunc())
+	testMessageCanBeSent(t, true, 1, getRaftRPCFactoryFunc())
 }
+
+//func TestUDPMessageCanBeSent(t *testing.T) {
+//	defer leaktest.AfterTest(t)()
+//	//testMessageCanBeSent(t, false, settings.MaxProposalPayloadSize*2, NewUDPTransport)
+//	//testMessageCanBeSent(t, false, recvBufSize/2, NewUDPTransport)
+//	//testMessageCanBeSent(t, false, recvBufSize+1, NewUDPTransport)
+//	//testMessageCanBeSent(t, false, perConnBufSize+1, NewUDPTransport)
+//	//testMessageCanBeSent(t, false, perConnBufSize/2, NewUDPTransport)
+//	//testMessageCanBeSent(t, false, 1, NewUDPTransport)
+//	//testMessageCanBeSent(t, true, settings.MaxProposalPayloadSize*2, NewUDPTransport)
+//	//testMessageCanBeSent(t, true, recvBufSize/2, NewUDPTransport)
+//	//testMessageCanBeSent(t, true, recvBufSize+1, NewUDPTransport)
+//	//testMessageCanBeSent(t, true, perConnBufSize+1, NewUDPTransport)
+//	//testMessageCanBeSent(t, true, perConnBufSize/2, NewUDPTransport)
+//	testMessageCanBeSent(t, true, 1, NewUDPTransport)
+//}
+
 
 // add some latency to localhost
 // sudo tc qdisc add dev lo root handle 1:0 netem delay 100msec
@@ -435,7 +450,7 @@ func TestMessageCanBeSent(t *testing.T) {
 // net.ipv4.tcp_rmem = 4096 87380 25165824
 // net.ipv4.tcp_wmem = 4096 87380 25165824
 func testMessageCanBeSentWithLargeLatency(t *testing.T, mutualTLS bool) {
-	trans, nodes, stopper, _ := newTestTransport(mutualTLS)
+	trans, nodes, stopper, _ := newTestTransport(mutualTLS, getRaftRPCFactoryFunc())
 	defer trans.serverCtx.Stop()
 	defer trans.Stop()
 	defer stopper.Stop()
@@ -476,7 +491,7 @@ func TestMessageCanBeSentWithLargeLatency(t *testing.T) {
 }
 
 func testNothingSentBeforeDeploymentIDIsSet(t *testing.T, mutualTLS bool) {
-	trans, nodes, stopper, _ := newTestTransport(mutualTLS)
+	trans, nodes, stopper, _ := newTestTransport(mutualTLS, getRaftRPCFactoryFunc())
 	defer trans.serverCtx.Stop()
 	defer trans.Stop()
 	defer stopper.Stop()
@@ -509,7 +524,7 @@ func TestNothingSentBeforeDeploymentIDIsSet(t *testing.T) {
 
 func testMessageBatchWithNotMatchedDBVAreDropped(t *testing.T,
 	f SendMessageBatchFunc, mutualTLS bool) {
-	trans, nodes, stopper, _ := newTestTransport(mutualTLS)
+	trans, nodes, stopper, _ := newTestTransport(mutualTLS, getRaftRPCFactoryFunc())
 	defer trans.serverCtx.Stop()
 	defer trans.Stop()
 	defer stopper.Stop()
@@ -647,7 +662,7 @@ func TestLargeSnapshotCanBeSent(t *testing.T) {
 }
 
 func testSourceAddressWillBeAddedToNodeRegistry(t *testing.T, mutualTLS bool) {
-	trans, nodes, stopper, _ := newTestTransport(mutualTLS)
+	trans, nodes, stopper, _ := newTestTransport(mutualTLS, getRaftRPCFactoryFunc())
 	defer trans.serverCtx.Stop()
 	defer trans.Stop()
 	defer stopper.Stop()
@@ -742,7 +757,7 @@ func waitForSnapshotCountUpdate(handler *testMessageHandler, maxWait uint64) {
 }
 
 func testSnapshotCanBeSend(t *testing.T, sz uint64, maxWait uint64, mutualTLS bool) {
-	trans, nodes, stopper, tt := newTestTransport(mutualTLS)
+	trans, nodes, stopper, tt := newTestTransport(mutualTLS, getRaftRPCFactoryFunc())
 	defer trans.serverCtx.Stop()
 	defer tt.cleanup()
 	defer trans.Stop()
@@ -794,7 +809,7 @@ func testSnapshotCanBeSend(t *testing.T, sz uint64, maxWait uint64, mutualTLS bo
 }
 
 func testNoSnapshotWillBeSentBeforeDeploymentIDIsSet(t *testing.T, mutualTLS bool) {
-	trans, nodes, stopper, tt := newTestTransport(mutualTLS)
+	trans, nodes, stopper, tt := newTestTransport(mutualTLS, getRaftRPCFactoryFunc())
 	defer trans.serverCtx.Stop()
 	defer tt.cleanup()
 	defer trans.Stop()
@@ -837,7 +852,7 @@ func TestNoSnapshotWillBeSentBeforeDeploymentIDIsSet(t *testing.T) {
 
 func testSnapshotWithNotMatchedDBVWillBeDropped(t *testing.T,
 	f StreamChunkSendFunc, mutualTLS bool) {
-	trans, nodes, stopper, tt := newTestTransport(mutualTLS)
+	trans, nodes, stopper, tt := newTestTransport(mutualTLS, getRaftRPCFactoryFunc())
 	defer trans.serverCtx.Stop()
 	defer tt.cleanup()
 	defer trans.Stop()
@@ -895,7 +910,7 @@ func TestSnapshotWithNotMatchedBinVerWillBeDropped(t *testing.T) {
 
 func testFailedSnapshotLoadChunkWillBeReported(t *testing.T, mutualTLS bool) {
 	snapshotSize := uint64(snapChunkSize) * 10
-	trans, nodes, stopper, tt := newTestTransport(mutualTLS)
+	trans, nodes, stopper, tt := newTestTransport(mutualTLS, getRaftRPCFactoryFunc())
 	defer trans.serverCtx.Stop()
 	defer tt.cleanup()
 	defer trans.Stop()
@@ -947,7 +962,7 @@ func TestFailedSnapshotLoadChunkWillBeReported(t *testing.T) {
 
 func testFailedConnectionReportsSnapshotFailure(t *testing.T, mutualTLS bool) {
 	snapshotSize := uint64(snapChunkSize) * 10
-	trans, nodes, stopper, tt := newTestTransport(mutualTLS)
+	trans, nodes, stopper, tt := newTestTransport(mutualTLS, getRaftRPCFactoryFunc())
 	defer trans.serverCtx.Stop()
 	defer tt.cleanup()
 	defer trans.Stop()
@@ -991,7 +1006,7 @@ func TestFailedConnectionReportsSnapshotFailure(t *testing.T) {
 
 func testFailedSnapshotSendWillBeReported(t *testing.T, mutualTLS bool) {
 	snapshotSize := uint64(snapChunkSize) * 10
-	trans, nodes, stopper, tt := newTestTransport(mutualTLS)
+	trans, nodes, stopper, tt := newTestTransport(mutualTLS, getRaftRPCFactoryFunc())
 	defer trans.serverCtx.Stop()
 	defer tt.cleanup()
 	defer trans.Stop()
@@ -1072,7 +1087,7 @@ func TestFailedSnapshotSendWillBeReported(t *testing.T) {
 }
 
 func testSnapshotWithExternalFilesCanBeSend(t *testing.T, sz uint64, maxWait uint64, mutualTLS bool) {
-	trans, nodes, stopper, tt := newTestTransport(mutualTLS)
+	trans, nodes, stopper, tt := newTestTransport(mutualTLS, getRaftRPCFactoryFunc())
 	defer trans.serverCtx.Stop()
 	defer tt.cleanup()
 	defer trans.Stop()

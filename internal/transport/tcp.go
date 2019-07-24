@@ -133,6 +133,7 @@ func writeMessage(conn net.Conn,
 		if err := conn.SetWriteDeadline(tt); err != nil {
 			return err
 		}
+		plog.Errorf("Message size to be written %v", bufSize)
 		if _, err := conn.Write(buf[sent : sent+bufSize]); err != nil {
 			return err
 		}
@@ -342,6 +343,7 @@ func (g *TCPTransport) Start() error {
 				panic(err)
 
 			}
+			plog.Errorf("blocking on listen")
 			var once sync.Once
 			closeFn := func() {
 				once.Do(func() {
